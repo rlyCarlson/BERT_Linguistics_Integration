@@ -1,0 +1,44 @@
+from transformers import BertTokenizer, BertModel
+import pandas as pd
+import torch
+from tqdm import tqdm
+import os 
+
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+print("Using device:", device)
+
+tokenizer = BertTokenizer.from_pretrained('bert-base-cased')
+bert_model = BertModel.from_pretrained('bert-base-cased').to(device)
+
+def generate_embeddings(text):
+    if not isinstance(text, str):
+        return None
+    encoded_input = tokenizer(text, return_tensors='pt', padding=True, truncation=True, max_length=512)
+    encoded_input = {key: val.to(device) for key, val in encoded_input.items()}
+    with torch.no_grad():
+        outputs = bert_model(**encoded_input)
+        hidden_states = outputs.last_hidden_state.mean(dim=1)
+    return hidden_states.squeeze()
+
+file_path = '/Users/ishaansingh/Documents/CS224N_FinalProject/responses_SARC.csv'
+SARC_df = pd.read_csv(file_path)
+SARC_df['response_text'] = SARC_df['response_text'].astype(str)
+
+tqdm.pandas(desc="Generating Embeddings")
+
+base_dir = '/Users/ishaansingh/Documents/CS224N_FinalProject/SARC_Embeddings_train'
+batch_size = 10000
+for i in tqdm(range(0, len(SARC_df), batch_size), desc="Processing Batches"):
+    batch_df = SARC_df.iloc[i:i+batch_size]
+    batch_df['embeddings'] = batch_df['response_text'].progress_apply(lambda text: generate_embeddings(text))
+    batch_df.dropna(subset=['embeddings'], inplace=True)
+    
+    batch_dir = os.path.join(base_dir, f'Batch_{i//batch_size + 1}')
+    os.makedirs(batch_dir, exist_ok=True)  
+
+    features = torch.stack(batch_df['embeddings'].tolist()).to(device)
+    labels = torch.tensor(batch_df['label'].values).to(device)
+    torch.save({'features': features, 'labels': labels},
+               os.path.join(batch_dir, 'embeddings.pt'))
+
+    print(f"Embeddings and labels for Batch {i//batch_size + 1} saved successfully in {batch_dir}.")

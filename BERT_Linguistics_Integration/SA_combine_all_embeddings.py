@@ -1,0 +1,96 @@
+import numpy as np
+import torch
+import os
+from tqdm import tqdm  
+
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+print("Using MPS device:", device)
+
+def combine_SVD(embeddings):
+    matrix = np.hstack([embedding.to('cpu').detach().numpy() for embedding in embeddings])
+    matrix = np.expand_dims(matrix, axis=0)
+
+    # see paper with SVD explanation
+    U, S, VT = np.linalg.svd(matrix, full_matrices=False)
+    merged_embedding = VT[:1, :] 
+    merged_embedding = torch.from_numpy(merged_embedding).squeeze(0)
+    return merged_embedding.to(device)  
+
+def combine_concat(embeddings):
+    return torch.cat(embeddings, dim=-1)
+
+def combine_adding(embeddings):
+    normalized_embeddings = [(embedding - embedding.mean()) / embedding.std() for embedding in embeddings]
+    summed_embedding = sum(normalized_embeddings)
+    return summed_embedding
+
+def pad_embeddings(embeddings, max_length):
+    batch_size, current_length, feature_size = embeddings.shape
+    if current_length >= max_length:
+        return embeddings
+    padding = torch.zeros((batch_size, max_length - current_length, feature_size), device=embeddings.device)
+    padded_embeddings = torch.cat([embeddings, padding], dim=1)
+    return padded_embeddings
+
+def process_directory(presup_dir, naive_dir, implic_dir, output_dir_svd, output_dir_cat, output_dir_add, max_length=512):
+    presup_files = sorted(os.listdir(presup_dir))
+    naive_files = sorted(os.listdir(naive_dir))
+    implic_files = sorted(os.listdir(implic_dir))  
+    
+    os.makedirs(output_dir_svd, exist_ok=True)
+    os.makedirs(output_dir_cat, exist_ok=True)
+    os.makedirs(output_dir_add, exist_ok=True)
+
+    for presup_file, naive_file, implic_file in tqdm(zip(presup_files, naive_files, implic_files), total=len(presup_files), desc="Processing files"):
+        presup_path = os.path.join(presup_dir, presup_file)
+        naive_path = os.path.join(naive_dir, naive_file)
+        implic_path = os.path.join(implic_dir, implic_file)
+        presup_embeddings = torch.load(presup_path, map_location=device)
+        presup_embeddings = presup_embeddings[:, 0, :]
+        naive_data = torch.load(naive_path, map_location=device)
+        naive_embeddings, labels = naive_data['embeddings'], naive_data['labels']
+        naive_embeddings = naive_embeddings[:, 0, :]
+        implic_embeddings = torch.load(implic_path, map_location=device)  # Load third embedding
+        implic_embeddings = implic_embeddings[:, 0, :]
+
+        presup_embeddings_cpu = presup_embeddings.to('cpu')
+        naive_embeddings_cpu = naive_embeddings.to('cpu')
+        implic_embeddings_cpu = implic_embeddings.to('cpu')
+        max_size = max(presup_embeddings_cpu.shape[0], naive_embeddings_cpu.shape[0], implic_embeddings_cpu.shape[0])
+
+        if presup_embeddings_cpu.shape[0] < max_size:
+            padded_array = np.pad(presup_embeddings_cpu.numpy(), ((0, max_size - presup_embeddings_cpu.shape[0]), (0, 0)), mode='constant', constant_values=0)
+            presup_embeddings = torch.from_numpy(padded_array).to(device)
+        else:
+            presup_embeddings = torch.from_numpy(presup_embeddings_cpu.numpy()).to(device)
+
+        if naive_embeddings_cpu.shape[0] < max_size:
+            padded_array = np.pad(naive_embeddings_cpu.numpy(), ((0, max_size - naive_embeddings_cpu.shape[0]), (0, 0)), mode='constant', constant_values=0)
+            naive_embeddings = torch.from_numpy(padded_array).to(device)
+        else:
+            naive_embeddings = torch.from_numpy(naive_embeddings_cpu.numpy()).to(device)
+
+        if implic_embeddings_cpu.shape[0] < max_size:
+            padded_array = np.pad(implic_embeddings_cpu.numpy(), ((0, max_size - implic_embeddings_cpu.shape[0]), (0, 0)), mode='constant', constant_values=0)
+            implic_embeddings = torch.from_numpy(padded_array).to(device)
+        else:
+            implic_embeddings = torch.from_numpy(implic_embeddings_cpu.numpy()).to(device)
+
+
+        combined_svd = combine_SVD([presup_embeddings, naive_embeddings, implic_embeddings])
+        combined_concat = combine_concat([presup_embeddings, naive_embeddings, implic_embeddings])
+        combined_adding = combine_adding([presup_embeddings, naive_embeddings, implic_embeddings])
+        torch.save(combined_svd, os.path.join(output_dir_svd, presup_file))
+        torch.save(combined_concat, os.path.join(output_dir_cat, presup_file))
+        torch.save(combined_adding, os.path.join(output_dir_add, presup_file))
+
+if __name__ == '__main__':
+    presup_dir = '/Users/ishaansingh/Documents/CS224N_FinalProject/SA_presup_embed_test'
+    naive_dir = '/Users/ishaansingh/Documents/CS224N_FinalProject/sent_test'
+    implic_dir = '/Users/ishaansingh/Documents/CS224N_FinalProject/SA_imp_embed_test'
+    output_dir_svd = '/Users/ishaansingh/Documents/CS224N_FinalProject/SA_total_embeddings_svd_test'
+    output_dir_cat = '/Users/ishaansingh/Documents/CS224N_FinalProject/SA_total_embeddings_cat_test'
+    output_dir_add = '/Users/ishaansingh/Documents/CS224N_FinalProject/SA_total_embeddings_add_test'
+    max_length = 512  
+
+    process_directory(presup_dir, naive_dir, implic_dir, output_dir_svd, output_dir_cat, output_dir_add, max_length)
